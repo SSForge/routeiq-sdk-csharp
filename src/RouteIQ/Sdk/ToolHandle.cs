@@ -26,6 +26,7 @@ public sealed class ToolHandle : IDisposable
         Dictionary<string, object>? args,
         string permission)
     {
+        task.RecordTool(name);
         _span = riq.ActivitySource.StartActivity($"tool:{name}");
         if (_span == null) return;
 
@@ -43,17 +44,25 @@ public sealed class ToolHandle : IDisposable
         _span.SetTag("routeiq.tool.permission_level",  perm);
     }
 
-    public void Success(double? latencyMs = null) => Finish("1", null, latencyMs);
-    public void Fail(string? errorCode = null, double? latencyMs = null) => Finish("2", errorCode, latencyMs);
+    public void Success(double? latencyMs = null, int? tokensIn = null, int? tokensOut = null)
+        => Finish("1", null, latencyMs, null, tokensIn, tokensOut);
 
-    private void Finish(string status, string? errorCode, double? latencyMs)
+    public void Fail(string? errorCode = null, double? latencyMs = null,
+                     int? retryCount = null, int? tokensIn = null, int? tokensOut = null)
+        => Finish("2", errorCode, latencyMs, retryCount, tokensIn, tokensOut);
+
+    private void Finish(string status, string? errorCode, double? latencyMs,
+                        int? retryCount, int? tokensIn, int? tokensOut)
     {
         if (_done || _span == null) return;
         _done = true;
         var elapsed = (Stopwatch.GetTimestamp() - _startTick) * 1000.0 / Stopwatch.Frequency;
         _span.SetTag("routeiq.tool.result_status", status);
         _span.SetTag("routeiq.tool.latency_ms",    latencyMs ?? elapsed);
-        if (errorCode != null) _span.SetTag("routeiq.tool.error_code", errorCode);
+        if (errorCode  != null) _span.SetTag("routeiq.tool.error_code",  errorCode);
+        if (retryCount != null) _span.SetTag("routeiq.tool.retry_count", retryCount);
+        if (tokensIn   != null) _span.SetTag("routeiq.tool.tokens_in",   tokensIn);
+        if (tokensOut  != null) _span.SetTag("routeiq.tool.tokens_out",  tokensOut);
     }
 
     public void Dispose()

@@ -217,4 +217,128 @@ public class HandlesTests
         Assert.Single(ids);
         Assert.Equal(riq.SessionId, ids[0]);
     }
+
+    // ── v0.3.0 signals ──────────────────────────────────────────────────────
+
+    [Fact]
+    public void Tool_RetryCount()
+    {
+        var (riq, spans) = MakeTestRiq();
+        using var task = riq.Task("q");
+        using var step = task.Step();
+        using (var tool = step.Tool("db_query"))
+        {
+            tool.Fail(retryCount: 3);
+        }
+        var span = spans.First(s => s.DisplayName == "tool:db_query");
+        Assert.Equal("3", Attr(span, "routeiq.tool.retry_count"));
+    }
+
+    [Fact]
+    public void Tool_TokenSplit()
+    {
+        var (riq, spans) = MakeTestRiq();
+        using var task = riq.Task("q");
+        using var step = task.Step();
+        using (var tool = step.Tool("llm"))
+        {
+            tool.Success(tokensIn: 100, tokensOut: 200);
+        }
+        var span = spans.First(s => s.DisplayName == "tool:llm");
+        Assert.Equal("100", Attr(span, "routeiq.tool.tokens_in"));
+        Assert.Equal("200", Attr(span, "routeiq.tool.tokens_out"));
+    }
+
+    [Fact]
+    public void Task_SameToolCount()
+    {
+        var (riq, spans) = MakeTestRiq();
+        using (var task = riq.Task("q"))
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                using var step = task.Step();
+                using (var _ = step.Tool("search")) { }
+            }
+            task.Complete();
+        }
+        var span = spans.First(s => s.DisplayName.StartsWith("task:"));
+        Assert.Equal("4", Attr(span, "routeiq.same_tool_count"));
+    }
+
+    [Fact]
+    public void Task_SameToolCountNotEmittedForDistinct()
+    {
+        var (riq, spans) = MakeTestRiq();
+        using (var task = riq.Task("q"))
+        {
+            using (var step = task.Step()) { using var _ = step.Tool("search"); }
+            using (var step = task.Step()) { using var _ = step.Tool("write"); }
+            task.Complete();
+        }
+        var span = spans.First(s => s.DisplayName.StartsWith("task:"));
+        Assert.Null(Attr(span, "routeiq.same_tool_count"));
+    }
+
+    [Fact]
+    public void Task_Escalation()
+    {
+        var (riq, spans) = MakeTestRiq();
+        using var task = riq.Task("refund");
+        task.Escalate("amount_too_large", "human_review");
+        var span = spans.First(s => s.DisplayName.StartsWith("escalation:"));
+        Assert.Equal("true",             Attr(span, "routeiq.escalation.triggered"));
+        Assert.Equal("amount_too_large", Attr(span, "routeiq.escalation.reason"));
+        Assert.Equal("human_review",     Attr(span, "routeiq.escalation.target"));
+    }
+
+    [Fact]
+    public void Step_Guardrail()
+    {
+        var (riq, spans) = MakeTestRiq();
+        using var task = riq.Task("q");
+        using var step = task.Step();
+        step.Guardrail("pii_filter", true);
+        var span = spans.First(s => s.DisplayName.StartsWith("guardrail:"));
+        Assert.Equal("pii_filter", Attr(span, "routeiq.guardrail.type"));
+        Assert.Equal("true",       Attr(span, "routeiq.guardrail.blocked"));
+    }
+
+    [Fact]
+    public void Step_Replan()
+    {
+        var (riq, spans) = MakeTestRiq();
+        using var task = riq.Task("q");
+        using (var step = task.Step(action: "search"))
+        {
+            step.Replan("search_failed_switching_to_cache");
+        }
+        var span = spans.First(s => s.DisplayName.StartsWith("step:"));
+        Assert.Equal("true",                             Attr(span, "routeiq.replan.triggered"));
+        Assert.Equal("search_failed_switching_to_cache", Attr(span, "routeiq.replan.reason"));
+    }
+
+    [Fact]
+    public void Step_ModelOverride()
+    {
+        var (riq, spans) = MakeTestRiq();
+        using var task = riq.Task("q");
+        using (var _ = task.Step(model: "claude-opus-4-5")) { }
+        var span = spans.First(s => s.DisplayName.StartsWith("step:"));
+        Assert.Equal("claude-opus-4-5", Attr(span, "routeiq.step.model"));
+    }
+
+    [Fact]
+    public void Task_TokenSplitAutoSums()
+    {
+        var (riq, spans) = MakeTestRiq();
+        using (var task = riq.Task("q"))
+        {
+            task.Complete(tokensIn: 300, tokensOut: 700);
+        }
+        var span = spans.First(s => s.DisplayName.StartsWith("task:"));
+        Assert.Equal("300",  Attr(span, "routeiq.task.tokens_in"));
+        Assert.Equal("700",  Attr(span, "routeiq.task.tokens_out"));
+        Assert.Equal("1000", Attr(span, "routeiq.task.total_tokens"));
+    }
 }
